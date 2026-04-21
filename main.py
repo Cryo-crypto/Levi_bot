@@ -116,6 +116,12 @@ async def on_ready():
     await tree.sync()
     print(f"Logged in as {bot.user}")
 
+@bot.event
+async def on_ready():
+    print(f'{bot.user} is online! W in the chat')
+    activity = Activity(name='Nathaniel and Haruto', type=ActivityType.watching)
+    await bot.change_presence(activity=activity)
+
 # ----------------------------
 # MESSAGE HANDLER
 # ----------------------------
