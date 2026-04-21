@@ -3,8 +3,9 @@ import discord
 import asyncio
 import random
 from discord.ext import commands
-from discord import ActivityType, Activity
+from discord import app_commands
 from dotenv import load_dotenv
+from collections import defaultdict, deque
 
 load_dotenv()
 
@@ -12,24 +13,26 @@ load_dotenv()
 # ENV
 # ----------------------------
 TOKEN = os.getenv("TOKEN")
-HF_API_KEY = os.getenv("HF_API_KEY")
-IGNORE_PREFIX = os.getenv("IGNORE_KEY", "!")
-CHANNELS = os.getenv("CHANNELS", "")
-
-CHANNELS = list(map(int, CHANNELS.split(","))) if CHANNELS else []
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # ----------------------------
-# DISCORD SETUP
+# BOT SETUP
 # ----------------------------
 intents = discord.Intents.default()
-intents.guilds = True
 intents.messages = True
 intents.message_content = True
+intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+tree = bot.tree
 
 # ----------------------------
-# LEVI PROMPT
+# MEMORY
+# ----------------------------
+memory = defaultdict(lambda: deque(maxlen=12))
+
+# ----------------------------
+# LEVI SYSTEM PROMPT
 # ----------------------------
 SYSTEM_PROMPT = """
 You are Levi Ackerman from Attack on Titan.
@@ -42,28 +45,31 @@ Rules:
 """
 
 # ----------------------------
-# AI FUNCTION (FIXED FOR HF)
+# AI FUNCTION
 # ----------------------------
 def generate_response(conversation):
     import requests
-    import os
 
-    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not OPENROUTER_API_KEY:
+        return "Tch... missing API key."
 
-    user_message = conversation[-1]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    for msg in conversation:
+        if msg.startswith("User:"):
+            messages.append({
+                "role": "user",
+                "content": msg.replace("User:", "").strip()
+            })
+        elif msg.startswith("Levi:"):
+            messages.append({
+                "role": "assistant",
+                "content": msg.replace("Levi:", "").strip()
+            })
 
     payload = {
-        "model": "meta-llama/llama-3.1-8b-instruct",
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are Levi Ackerman from Attack on Titan. Be extremely blunt, cold, and concise. 1–3 short sentences max."
-            },
-            {
-                "role": "user",
-                "content": user_message
-            }
-        ],
+        "model": "openai/gpt-4o-mini",
+        "messages": messages,
         "temperature": 0.6,
         "max_tokens": 120
     }
@@ -71,54 +77,44 @@ def generate_response(conversation):
     response = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
         headers={
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json"
         },
         json=payload
     )
 
-    #print("STATUS:", response.status_code)
-
     if response.status_code != 200:
-        print("ERROR STATUS:", response.status_code)
-        print("ERROR BODY:", response.text)
+        print("ERROR:", response.text)
         return "Tch... something went wrong."
 
     data = response.json()
     return data["choices"][0]["message"]["content"].strip()
-# ----------------------------
-# SUPPORT COMMAND
-# ----------------------------
-@bot.event
-async def on_interaction(interaction):
-    if interaction.is_application_command():
-        if interaction.data.get("name") == "support":
-            await interaction.response.send_message("discord.gg/kbj3gCMGAb")
 
 # ----------------------------
-# GUILD JOIN
+# SLASH COMMANDS
 # ----------------------------
-@bot.event
-async def on_guild_join(guild):
-    channels = [
-        c for c in guild.text_channels
-        if c.permissions_for(guild.me).send_messages
-    ]
 
-    if not channels:
-        return
-
-    channel = random.choice(channels)
-
-    embed = discord.Embed(
-        title="Thanks for adding Levi AI Bot",
-        description="Choose a channel for bot interaction. Avoid spam channels.",
-        color=0xff6610
+@tree.command(name="support", description="Get support server link")
+async def support(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "discord.gg/kbj3gCMGAb",
+        ephemeral=True
     )
 
-    embed.set_footer(text="Made by Nathaniel and Haruto")
+@tree.command(name="setup", description="Initialize Levi system in this server")
+async def setup(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "Levi system initialized. Ping me to activate conversation mode.",
+        ephemeral=True
+    )
 
-    await channel.send(embed=embed)
+# ----------------------------
+# READY EVENT
+# ----------------------------
+@bot.event
+async def on_ready():
+    await tree.sync()
+    print(f"Logged in as {bot.user}")
 
 # ----------------------------
 # MESSAGE HANDLER
@@ -128,13 +124,19 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    #print("MESSAGE RECEIVED:", message.content)
+    channel_id = message.channel.id
 
     async with message.channel.typing():
-        conversation = [message.content]
+
+        # store user message
+        memory[channel_id].append(f"User: {message.content}")
+
+        conversation = list(memory[channel_id])
+
         reply = await asyncio.to_thread(generate_response, conversation)
 
-    #print("BOT REPLY:", reply)
+        memory[channel_id].append(f"Levi: {reply}")
+
     await message.channel.send(reply)
 
 # ----------------------------
